@@ -11,11 +11,14 @@ import {
   type ChargerItem,
   type ChargerResponse,
 } from '@/lib/evcharger';
-import { loadRegistrations, type RegisteredCharger } from '@/lib/registrations';
+import { fetchRegistrations, type RegisteredCharger } from '@/lib/registrations';
+import ChargerMap, { type MapPoint } from '@/components/ChargerMap';
 
 interface Row extends ChargerItem {
   _mine?: boolean;
 }
+
+type View = 'list' | 'map';
 
 const TYPE_PALETTE = [
   '#0b7d4f',
@@ -34,6 +37,7 @@ export default function DashboardPage() {
   const [numOfRows, setNumOfRows] = useState(200);
   const [pageNo, setPageNo] = useState(1);
   const [includeMine, setIncludeMine] = useState(true);
+  const [view, setView] = useState<View>('list');
 
   const [data, setData] = useState<ChargerResponse | null>(null);
   const [mine, setMine] = useState<RegisteredCharger[]>([]);
@@ -41,7 +45,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setMine(loadRegistrations());
+    fetchRegistrations().then(({ items }) => setMine(items));
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -101,6 +105,26 @@ export default function DashboardPage() {
   }, [data, mineRows, pageNo]);
 
   const agg = useMemo(() => aggregate(rows), [rows]);
+
+  const mapPoints: MapPoint[] = useMemo(() => {
+    return rows
+      .map((r): MapPoint | null => {
+        const lat = Number(r.lat);
+        const lng = Number(r.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+        const sm = statMeta(r.stat);
+        return {
+          lat,
+          lng,
+          name: r.statNm ?? '충전소',
+          addr: [r.addr, r.addrDetail].filter(Boolean).join(' ') || undefined,
+          statLabel: sm.label,
+          statColor: sm.color,
+          mine: r._mine,
+        };
+      })
+      .filter((p): p is MapPoint => p !== null);
+  }, [rows]);
 
   const totalCount = data?.totalCount ?? 0;
   const mineCount = mineRows.length;
@@ -255,24 +279,44 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* List */}
+      {/* List / Map */}
       <div className="section-title">
-        <h2>충전기 목록</h2>
-        <Link className="btn btn-ghost" href="/register">
-          + 충전기 등록
-        </Link>
+        <h2>충전기 {view === 'map' ? '지도' : '목록'}</h2>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div className="segmented" role="tablist">
+            <button
+              className={view === 'list' ? 'active' : ''}
+              onClick={() => setView('list')}
+            >
+              목록
+            </button>
+            <button className={view === 'map' ? 'active' : ''} onClick={() => setView('map')}>
+              지도
+            </button>
+          </div>
+          <Link className="btn btn-ghost" href="/register">
+            + 충전기 등록
+          </Link>
+        </div>
       </div>
 
       <div className="toolbar">
         <span className="muted">
           {loading
             ? '불러오는 중…'
-            : `${regionName(zcode)} · ${totalCount.toLocaleString()}건 중 ${rows.length.toLocaleString()}건 표시 (페이지 ${pageNo})`}
+            : view === 'map'
+              ? `${regionName(zcode)} · 좌표 보유 ${mapPoints.length.toLocaleString()}건 지도 표시`
+              : `${regionName(zcode)} · ${totalCount.toLocaleString()}건 중 ${rows.length.toLocaleString()}건 표시 (페이지 ${pageNo})`}
         </span>
       </div>
 
-      <div className="card">
-        {loading ? (
+      {view === 'map' ? (
+        <div className="card card-pad">
+          <ChargerMap points={mapPoints} />
+        </div>
+      ) : (
+        <div className="card">
+          {loading ? (
           <div className="loading-row">
             <span className="spinner" /> 데이터를 불러오는 중입니다…
           </div>
@@ -330,10 +374,11 @@ export default function DashboardPage() {
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
-      {totalCount > pageSize && (
+      {view === 'list' && totalCount > pageSize && (
         <div className="pager">
           <button
             className="btn btn-ghost"

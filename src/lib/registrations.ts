@@ -1,28 +1,20 @@
-// 브라우저 localStorage 기반 "자체 등록" 충전기 저장소.
-// 공공데이터 API 는 조회 전용이므로, 사용자가 신규 등록하는 충전기는
-// 이 앱(브라우저) 안에 보관하고 설치현황에서 함께 볼 수 있게 한다.
+// 클라이언트 등록 API — 서버(/api/registrations) 우선, 실패 시 localStorage 폴백.
+// 서버 저장소가 사용 가능하면 서버를 원본으로 삼고 로컬에 캐시를 미러링한다.
 
-export interface RegisteredCharger {
-  id: string; // 내부 고유 ID
-  statNm: string; // 충전소명
-  addr: string; // 주소
-  addrDetail?: string; // 상세주소/위치
-  zcode: string; // 시도 코드
-  chgerType: string; // 충전기 타입 코드
-  output?: string; // 충전용량(kW)
-  busiNm?: string; // 운영기관/사업자
-  busiCall?: string; // 연락처
-  useTime?: string; // 이용가능시간
-  parkingFree?: string; // 'Y' | 'N'
-  lat?: string;
-  lng?: string;
-  note?: string;
-  createdAt: string; // ISO
-}
+import {
+  genChargerId,
+  type RegisteredCharger,
+  type RegisteredChargerInput,
+} from './charger-record';
+
+export type { RegisteredCharger, RegisteredChargerInput };
+export type RegSource = 'server' | 'local';
 
 const STORAGE_KEY = 'ev-registered-chargers-v1';
 
-export function loadRegistrations(): RegisteredCharger[] {
+// ----- localStorage (캐시 & 폴백) -----------------------------------------
+
+export function readLocal(): RegisteredCharger[] {
   if (typeof window === 'undefined') return [];
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -34,32 +26,85 @@ export function loadRegistrations(): RegisteredCharger[] {
   }
 }
 
-export function saveRegistrations(list: RegisteredCharger[]): void {
+function writeLocal(list: RegisteredCharger[]): void {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
 }
 
-export function addRegistration(
-  input: Omit<RegisteredCharger, 'id' | 'createdAt'>,
-): RegisteredCharger[] {
-  const list = loadRegistrations();
+// 서버 저장소 사용 가능 여부(501 응답 시 false 로 전환)
+let serverAvailable = true;
+
+// ----- 공개 API ------------------------------------------------------------
+
+export async function fetchRegistrations(): Promise<{
+  items: RegisteredCharger[];
+  source: RegSource;
+}> {
+  try {
+    const res = await fetch('/api/registrations', { cache: 'no-store' });
+    if (res.ok) {
+      const json = await res.json();
+      const items = (json.items ?? []) as RegisteredCharger[];
+      serverAvailable = true;
+      writeLocal(items); // 로컬 미러
+      return { items, source: 'server' };
+    }
+    if (res.status === 501) serverAvailable = false;
+  } catch {
+    // 네트워크 오류 → 로컬 폴백
+  }
+  return { items: readLocal(), source: 'local' };
+}
+
+export async function createRegistration(
+  input: RegisteredChargerInput,
+): Promise<{ item: RegisteredCharger; source: RegSource }> {
+  if (serverAvailable) {
+    try {
+      const res = await fetch('/api/registrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const item = json.item as RegisteredCharger;
+        writeLocal([item, ...readLocal().filter((r) => r.id !== item.id)]);
+        return { item, source: 'server' };
+      }
+      if (res.status === 501) {
+        serverAvailable = false;
+      } else {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || `등록 실패 (HTTP ${res.status})`);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message && !/fetch/i.test(err.message)) throw err;
+      // 네트워크 오류는 로컬 폴백
+      serverAvailable = false;
+    }
+  }
+
+  // 로컬 폴백
   const item: RegisteredCharger = {
     ...input,
-    id: genId(),
+    id: genChargerId(),
     createdAt: new Date().toISOString(),
   };
-  const next = [item, ...list];
-  saveRegistrations(next);
-  return next;
+  writeLocal([item, ...readLocal()]);
+  return { item, source: 'local' };
 }
 
-export function removeRegistration(id: string): RegisteredCharger[] {
-  const next = loadRegistrations().filter((r) => r.id !== id);
-  saveRegistrations(next);
-  return next;
-}
-
-function genId(): string {
-  const rnd = Math.random().toString(36).slice(2, 8);
-  return `reg-${Date.now().toString(36)}-${rnd}`;
+export async function deleteRegistration(id: string): Promise<void> {
+  if (serverAvailable) {
+    try {
+      const res = await fetch(`/api/registrations/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      if (res.status === 501) serverAvailable = false;
+    } catch {
+      serverAvailable = false;
+    }
+  }
+  writeLocal(readLocal().filter((r) => r.id !== id));
 }

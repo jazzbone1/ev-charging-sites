@@ -5,10 +5,11 @@ import Link from 'next/link';
 import { REGIONS, regionName } from '@/lib/regions';
 import { CHGER_TYPE, chgerTypeName, formatKstDate } from '@/lib/evcharger';
 import {
-  addRegistration,
-  loadRegistrations,
-  removeRegistration,
+  createRegistration,
+  deleteRegistration,
+  fetchRegistrations,
   type RegisteredCharger,
+  type RegSource,
 } from '@/lib/registrations';
 
 interface FormState {
@@ -48,9 +49,17 @@ export default function RegisterPage() {
   const [list, setList] = useState<RegisteredCharger[]>([]);
   const [flash, setFlash] = useState<string | null>(null);
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({});
+  const [source, setSource] = useState<RegSource>('local');
+  const [submitting, setSubmitting] = useState(false);
+
+  const refresh = async () => {
+    const { items, source: src } = await fetchRegistrations();
+    setList(items);
+    setSource(src);
+  };
 
   useEffect(() => {
-    setList(loadRegistrations());
+    refresh();
   }, []);
 
   const set = (key: keyof FormState) => (
@@ -67,33 +76,44 @@ export default function RegisterPage() {
     return Object.keys(next).length === 0;
   };
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
-    const next = addRegistration({
-      statNm: form.statNm.trim(),
-      addr: form.addr.trim(),
-      addrDetail: form.addrDetail.trim() || undefined,
-      zcode: form.zcode,
-      chgerType: form.chgerType,
-      output: form.output.trim() || undefined,
-      busiNm: form.busiNm.trim() || undefined,
-      busiCall: form.busiCall.trim() || undefined,
-      useTime: form.useTime.trim() || undefined,
-      parkingFree: form.parkingFree,
-      lat: form.lat.trim() || undefined,
-      lng: form.lng.trim() || undefined,
-      note: form.note.trim() || undefined,
-    });
-    setList(next);
-    setForm({ ...EMPTY, zcode: form.zcode });
-    setErrors({});
-    setFlash(`"${next[0].statNm}" 충전기가 등록되었습니다.`);
-    window.setTimeout(() => setFlash(null), 3500);
+    setSubmitting(true);
+    try {
+      const { item, source: src } = await createRegistration({
+        statNm: form.statNm.trim(),
+        addr: form.addr.trim(),
+        addrDetail: form.addrDetail.trim() || undefined,
+        zcode: form.zcode,
+        chgerType: form.chgerType,
+        output: form.output.trim() || undefined,
+        busiNm: form.busiNm.trim() || undefined,
+        busiCall: form.busiCall.trim() || undefined,
+        useTime: form.useTime.trim() || undefined,
+        parkingFree: form.parkingFree,
+        lat: form.lat.trim() || undefined,
+        lng: form.lng.trim() || undefined,
+        note: form.note.trim() || undefined,
+      });
+      setSource(src);
+      await refresh();
+      setForm({ ...EMPTY, zcode: form.zcode });
+      setErrors({});
+      setFlash(
+        `"${item.statNm}" 충전기가 ${src === 'server' ? '서버에' : '브라우저에'} 등록되었습니다.`,
+      );
+      window.setTimeout(() => setFlash(null), 3500);
+    } catch (err) {
+      setFlash(err instanceof Error ? err.message : '등록에 실패했습니다.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const onDelete = (id: string) => {
-    setList(removeRegistration(id));
+  const onDelete = async (id: string) => {
+    await deleteRegistration(id);
+    await refresh();
   };
 
   const typeOptions = useMemo(() => Object.entries(CHGER_TYPE), []);
@@ -248,8 +268,8 @@ export default function RegisterPage() {
           </div>
 
           <div className="form-actions">
-            <button type="submit" className="btn btn-primary">
-              충전기 등록
+            <button type="submit" className="btn btn-primary" disabled={submitting}>
+              {submitting ? '등록 중…' : '충전기 등록'}
             </button>
             <button
               type="button"
@@ -266,7 +286,20 @@ export default function RegisterPage() {
       </div>
 
       <div className="section-title">
-        <h2>등록한 충전기 ({list.length})</h2>
+        <h2>
+          등록한 충전기 ({list.length}){' '}
+          <span
+            className="badge badge-outline"
+            title={
+              source === 'server'
+                ? '서버 저장소에 영구 저장됩니다.'
+                : '서버 저장소를 사용할 수 없어 이 브라우저에 저장됩니다.'
+            }
+            style={{ marginLeft: 6, verticalAlign: 'middle' }}
+          >
+            {source === 'server' ? '🗄️ 서버 저장' : '💾 브라우저 저장'}
+          </span>
+        </h2>
         <Link className="btn btn-ghost" href="/">
           설치현황 보기 →
         </Link>
