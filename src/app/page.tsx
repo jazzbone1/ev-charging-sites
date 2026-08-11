@@ -6,7 +6,6 @@ import { REGIONS, regionName } from '@/lib/regions';
 import {
   chgerTypeName,
   formatKstDate,
-  operatorLabel,
   speedClass,
   statMeta,
   type ChargerItem,
@@ -20,6 +19,19 @@ interface Row extends ChargerItem {
 }
 
 type View = 'list' | 'map';
+
+// 운영기관 표기 기준 — 데이터마다 CPO 브랜드가 bnm/busiNm 중 어디 있을지 달라
+// 사용자가 직접 전환해 비교할 수 있게 한다.
+type OpField = 'auto' | 'bnm' | 'busiNm';
+
+function resolveOperator(
+  item: { bnm?: string; busiNm?: string; busiId?: string },
+  field: OpField,
+): string {
+  if (field === 'bnm') return item.bnm || '미상';
+  if (field === 'busiNm') return item.busiNm || '미상';
+  return item.bnm || item.busiNm || item.busiId || '미상';
+}
 
 const TYPE_PALETTE = [
   '#0b7d4f',
@@ -41,6 +53,7 @@ export default function DashboardPage() {
   const [view, setView] = useState<View>('list');
   const [search, setSearch] = useState('');
   const [operator, setOperator] = useState('');
+  const [opField, setOpField] = useState<OpField>('auto');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [renderLimit, setRenderLimit] = useState(300);
 
@@ -116,10 +129,10 @@ export default function DashboardPage() {
     return showMine ? [...mineRows, ...apiRows] : apiRows;
   }, [data, mineRows, pageNo, fetchAll]);
 
-  const agg = useMemo(() => aggregate(rows), [rows]);
+  const agg = useMemo(() => aggregate(rows, opField), [rows, opField]);
 
   // 같은 충전소(주소)로 묶은 현장 목록
-  const stations = useMemo(() => groupByStation(rows), [rows]);
+  const stations = useMemo(() => groupByStation(rows, opField), [rows, opField]);
 
   // 검색(현장명/주소) + 운영기관 필터
   const filteredStations = useMemo(() => {
@@ -140,6 +153,11 @@ export default function DashboardPage() {
     setRenderLimit(300);
     setExpanded(new Set());
   }, [search, operator, zcode, numOfRows, pageNo]);
+
+  // 운영기관 표기 기준이 바뀌면 선택된 운영기관 값이 달라지므로 초기화
+  useEffect(() => {
+    setOperator('');
+  }, [opField]);
 
   // 지도 마커 — 현장 단위 (좌표 보유 현장만)
   const mapPoints: MapPoint[] = useMemo(() => {
@@ -227,6 +245,18 @@ export default function DashboardPage() {
               </option>
             ))}
             <option value={0}>전체</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="opField">운영기관 표기</label>
+          <select
+            id="opField"
+            value={opField}
+            onChange={(e) => setOpField(e.target.value as OpField)}
+          >
+            <option value="auto">자동 (bnm→busiNm)</option>
+            <option value="bnm">기관명 (bnm)</option>
+            <option value="busiNm">사업자명 (busiNm)</option>
           </select>
         </div>
         <div className="field">
@@ -419,6 +449,7 @@ export default function DashboardPage() {
                     station={s}
                     open={expanded.has(s.key)}
                     onToggle={() => toggleStation(s.key)}
+                    opField={opField}
                   />
                 ))}
               </div>
@@ -476,10 +507,12 @@ function StationRow({
   station,
   open,
   onToggle,
+  opField,
 }: {
   station: Station;
   open: boolean;
   onToggle: () => void;
+  opField: OpField;
 }) {
   const availColor = station.available > 0 ? '#16a34a' : '#6b7280';
   return (
@@ -548,7 +581,7 @@ function StationRow({
                       </td>
                       <td>{c.output ? `${c.output}kW` : '-'}</td>
                       <td title={`busiNm: ${c.busiNm ?? '-'} / bnm: ${c.bnm ?? '-'}`}>
-                        {operatorLabel(c)}
+                        {resolveOperator(c, opField)}
                       </td>
                       <td>
                         <span className="badge" style={{ background: sm.color }}>
@@ -622,7 +655,7 @@ interface Station {
   latestUpd?: string;
 }
 
-function groupByStation(rows: Row[]): Station[] {
+function groupByStation(rows: Row[], field: OpField): Station[] {
   const map = new Map<string, Station>();
   for (const r of rows) {
     const key = r.statId || `${r.statNm ?? ''}|${r.addr ?? ''}`;
@@ -633,7 +666,7 @@ function groupByStation(rows: Row[]): Station[] {
         statNm: r.statNm ?? '이름 없음',
         addr: r.addr ?? '',
         addrDetail: r.addrDetail,
-        busiNm: operatorLabel(r),
+        busiNm: resolveOperator(r, field),
         busiId: r.busiId,
         rawBusiNm: r.busiNm,
         rawBnm: r.bnm,
@@ -658,7 +691,8 @@ function groupByStation(rows: Row[]): Station[] {
     else s.hydrogen += 1;
     if (!s.lat && r.lat) s.lat = r.lat;
     if (!s.lng && r.lng) s.lng = r.lng;
-    if ((s.busiNm === '미상' || !s.busiNm) && operatorLabel(r) !== '미상') s.busiNm = operatorLabel(r);
+    if ((s.busiNm === '미상' || !s.busiNm) && resolveOperator(r, field) !== '미상')
+      s.busiNm = resolveOperator(r, field);
     if (!s.busiId && r.busiId) s.busiId = r.busiId;
     if (!s.rawBusiNm && r.busiNm) s.rawBusiNm = r.busiNm;
     if (!s.rawBnm && r.bnm) s.rawBnm = r.bnm;
@@ -682,7 +716,7 @@ interface Agg {
   operators: { key: string; count: number }[];
 }
 
-function aggregate(rows: Row[]): Agg {
+function aggregate(rows: Row[], field: OpField): Agg {
   const speed: Record<string, number> = {};
   const typeMap = new Map<string, number>();
   const statMap = new Map<string, number>();
@@ -700,8 +734,8 @@ function aggregate(rows: Row[]): Agg {
     statMap.set(stat, (statMap.get(stat) ?? 0) + 1);
     if (stat === '2') available += 1;
 
-    const op = operatorLabel(r);
-    if (op && op !== '미상') opMap.set(op, (opMap.get(op) ?? 0) + 1);
+    const op = resolveOperator(r, field);
+    opMap.set(op, (opMap.get(op) ?? 0) + 1);
   }
 
   const types = [...typeMap.entries()]
