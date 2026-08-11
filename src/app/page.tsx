@@ -38,6 +38,8 @@ export default function DashboardPage() {
   const [pageNo, setPageNo] = useState(1);
   const [includeMine, setIncludeMine] = useState(true);
   const [view, setView] = useState<View>('list');
+  const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const [data, setData] = useState<ChargerResponse | null>(null);
   const [mine, setMine] = useState<RegisteredCharger[]>([]);
@@ -91,6 +93,8 @@ export default function DashboardPage() {
         busiCall: m.busiCall,
         useTime: m.useTime,
         parkingFree: m.parkingFree,
+        lat: m.lat,
+        lng: m.lng,
         stat: '2',
         statUpdDt: m.createdAt.replace(/[-:T]/g, '').slice(0, 14),
         zcode: m.zcode,
@@ -106,25 +110,40 @@ export default function DashboardPage() {
 
   const agg = useMemo(() => aggregate(rows), [rows]);
 
+  // 같은 충전소(주소)로 묶은 현장 목록
+  const stations = useMemo(() => groupByStation(rows), [rows]);
+
+  // 검색 필터 (현장명 / 주소)
+  const filteredStations = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return stations;
+    return stations.filter(
+      (s) =>
+        s.statNm.toLowerCase().includes(q) ||
+        s.addr.toLowerCase().includes(q) ||
+        (s.addrDetail ?? '').toLowerCase().includes(q),
+    );
+  }, [stations, search]);
+
+  // 지도 마커 — 현장 단위 (좌표 보유 현장만)
   const mapPoints: MapPoint[] = useMemo(() => {
-    return rows
-      .map((r): MapPoint | null => {
-        const lat = Number(r.lat);
-        const lng = Number(r.lng);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-        const sm = statMeta(r.stat);
+    return filteredStations
+      .map((s): MapPoint | null => {
+        const lat = Number(s.lat);
+        const lng = Number(s.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
         return {
           lat,
           lng,
-          name: r.statNm ?? '충전소',
-          addr: [r.addr, r.addrDetail].filter(Boolean).join(' ') || undefined,
-          statLabel: sm.label,
-          statColor: sm.color,
-          mine: r._mine,
+          name: `${s.statNm} (충전기 ${s.total}기)`,
+          addr: [s.addr, s.addrDetail].filter(Boolean).join(' ') || undefined,
+          statLabel: `사용가능 ${s.available}/${s.total}`,
+          statColor: s.available > 0 ? '#16a34a' : '#6b7280',
+          mine: s.mine,
         };
       })
       .filter((p): p is MapPoint => p !== null);
-  }, [rows]);
+  }, [filteredStations]);
 
   const totalCount = data?.totalCount ?? 0;
   const mineCount = mineRows.length;
@@ -135,6 +154,22 @@ export default function DashboardPage() {
     if (next.zcode !== undefined) setZcode(next.zcode);
     if (next.numOfRows !== undefined) setNumOfRows(next.numOfRows);
     setPageNo(1);
+    setExpanded(new Set());
+  };
+
+  const toggleStation = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const allExpanded = filteredStations.length > 0 && expanded.size >= filteredStations.length;
+  const toggleAll = () => {
+    if (allExpanded) setExpanded(new Set());
+    else setExpanded(new Set(filteredStations.map((s) => s.key)));
   };
 
   return (
@@ -142,7 +177,7 @@ export default function DashboardPage() {
       <div className="page-head">
         <h1>전기차 충전기 설치현황</h1>
         <p>
-          한국환경공단 전기차 충전소 정보(OpenAPI)를 기반으로 지역별 충전기 설치 및 실시간 상태를
+          한국환경공단 전기차 충전소 정보(OpenAPI)를 기반으로 지역별 충전소 설치 및 실시간 상태를
           조회합니다.
         </p>
       </div>
@@ -176,6 +211,16 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
+        <div className="field" style={{ flex: 1, minWidth: 200 }}>
+          <label htmlFor="search">현장명·주소 검색</label>
+          <input
+            id="search"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="예) 국회도서관, 영등포구"
+          />
+        </div>
         <label className="chk">
           <input
             type="checkbox"
@@ -198,10 +243,10 @@ export default function DashboardPage() {
       {/* Stat cards */}
       <div className="stat-grid">
         <div className="card stat">
-          <div className="stat-label">전체 등록 충전기</div>
-          <div className="stat-value">{totalCount.toLocaleString()}</div>
+          <div className="stat-label">전체 충전소(현장)</div>
+          <div className="stat-value">{stations.length.toLocaleString()}</div>
           <div className="stat-sub">
-            {regionName(zcode)}
+            불러온 충전기 {agg.total.toLocaleString()}기
             {includeMine && mineCount > 0 ? ` · 자체등록 +${mineCount}` : ''}
           </div>
         </div>
@@ -210,7 +255,9 @@ export default function DashboardPage() {
           <div className="stat-value" style={{ color: 'var(--primary)' }}>
             {agg.available.toLocaleString()}
           </div>
-          <div className="stat-sub">불러온 {agg.total.toLocaleString()}건 중 {pct(agg.available, agg.total)}</div>
+          <div className="stat-sub">
+            충전기 {agg.total.toLocaleString()}기 중 {pct(agg.available, agg.total)}
+          </div>
         </div>
         <div className="card stat">
           <div className="stat-label">급속 충전기 비율</div>
@@ -221,9 +268,9 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="card stat">
-          <div className="stat-label">운영기관 수</div>
-          <div className="stat-value">{agg.operators.length.toLocaleString()}</div>
-          <div className="stat-sub">불러온 표본 기준</div>
+          <div className="stat-label">해당 지역 전체 충전기</div>
+          <div className="stat-value">{totalCount.toLocaleString()}</div>
+          <div className="stat-sub">{regionName(zcode)} (API 기준)</div>
         </div>
       </div>
 
@@ -251,13 +298,7 @@ export default function DashboardPage() {
             <p className="field-hint">데이터 없음</p>
           ) : (
             agg.statuses.map((s) => (
-              <BarRow
-                key={s.key}
-                label={s.label}
-                count={s.count}
-                total={agg.total}
-                color={s.color}
-              />
+              <BarRow key={s.key} label={s.label} count={s.count} total={agg.total} color={s.color} />
             ))
           )}
         </div>
@@ -281,13 +322,10 @@ export default function DashboardPage() {
 
       {/* List / Map */}
       <div className="section-title">
-        <h2>충전기 {view === 'map' ? '지도' : '목록'}</h2>
+        <h2>충전소 {view === 'map' ? '지도' : '목록'}</h2>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div className="segmented" role="tablist">
-            <button
-              className={view === 'list' ? 'active' : ''}
-              onClick={() => setView('list')}
-            >
+            <button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>
               목록
             </button>
             <button className={view === 'map' ? 'active' : ''} onClick={() => setView('map')}>
@@ -305,9 +343,15 @@ export default function DashboardPage() {
           {loading
             ? '불러오는 중…'
             : view === 'map'
-              ? `${regionName(zcode)} · 좌표 보유 ${mapPoints.length.toLocaleString()}건 지도 표시`
-              : `${regionName(zcode)} · ${totalCount.toLocaleString()}건 중 ${rows.length.toLocaleString()}건 표시 (페이지 ${pageNo})`}
+              ? `${regionName(zcode)} · 좌표 보유 ${mapPoints.length.toLocaleString()}개 현장 지도 표시`
+              : `${regionName(zcode)} · ${filteredStations.length.toLocaleString()}개 현장 표시` +
+                (search ? ` (검색: "${search}")` : ` · 페이지 ${pageNo}`)}
         </span>
+        {view === 'list' && filteredStations.length > 0 && (
+          <button className="btn btn-ghost" onClick={toggleAll}>
+            {allExpanded ? '모두 접기' : '모두 펼치기'}
+          </button>
+        )}
       </div>
 
       {view === 'map' ? (
@@ -317,73 +361,42 @@ export default function DashboardPage() {
       ) : (
         <div className="card">
           {loading ? (
-          <div className="loading-row">
-            <span className="spinner" /> 데이터를 불러오는 중입니다…
-          </div>
-        ) : rows.length === 0 ? (
-          <div className="empty">
-            <div className="emoji">🔌</div>
-            <p>표시할 충전기가 없습니다. 지역이나 조회 조건을 변경해 보세요.</p>
-          </div>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>충전소 / 주소</th>
-                  <th>충전기</th>
-                  <th>타입</th>
-                  <th>용량</th>
-                  <th>운영기관</th>
-                  <th>상태</th>
-                  <th>갱신</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, idx) => {
-                  const sm = statMeta(r.stat);
-                  return (
-                    <tr key={`${r.statId}-${r.chgerId}-${idx}`}>
-                      <td>
-                        <div className="cell-name">
-                          {r.statNm ?? '-'}{' '}
-                          {r._mine && <span className="tag tag-mine">자체등록</span>}
-                        </div>
-                        <div className="cell-sub">
-                          {[r.addr, r.addrDetail].filter(Boolean).join(' ') || '-'}
-                        </div>
-                      </td>
-                      <td>{r.chgerId ?? '-'}</td>
-                      <td>
-                        <span className="tag">{speedClass(r)}</span>{' '}
-                        <span className="cell-sub" style={{ display: 'inline' }}>
-                          {chgerTypeName(r.chgerType)}
-                        </span>
-                      </td>
-                      <td>{r.output ? `${r.output}kW` : '-'}</td>
-                      <td>{r.busiNm ?? r.bnm ?? '-'}</td>
-                      <td>
-                        <span className="badge" style={{ background: sm.color }}>
-                          {sm.label}
-                        </span>
-                      </td>
-                      <td className="cell-sub">{formatKstDate(r.statUpdDt)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+            <div className="loading-row">
+              <span className="spinner" /> 데이터를 불러오는 중입니다…
+            </div>
+          ) : filteredStations.length === 0 ? (
+            <div className="empty">
+              <div className="emoji">🔌</div>
+              <p>
+                {search
+                  ? `"${search}" 검색 결과가 없습니다.`
+                  : '표시할 충전소가 없습니다. 지역이나 조회 조건을 변경해 보세요.'}
+              </p>
+            </div>
+          ) : (
+            <div className="station-list">
+              {filteredStations.map((s) => (
+                <StationRow
+                  key={s.key}
+                  station={s}
+                  open={expanded.has(s.key)}
+                  onToggle={() => toggleStation(s.key)}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}
 
-      {view === 'list' && totalCount > pageSize && (
+      {view === 'list' && !search && totalCount > pageSize && (
         <div className="pager">
           <button
             className="btn btn-ghost"
             disabled={pageNo <= 1 || loading}
-            onClick={() => setPageNo((p) => Math.max(1, p - 1))}
+            onClick={() => {
+              setPageNo((p) => Math.max(1, p - 1));
+              setExpanded(new Set());
+            }}
           >
             ← 이전
           </button>
@@ -391,13 +404,100 @@ export default function DashboardPage() {
           <button
             className="btn btn-ghost"
             disabled={!hasNext || loading}
-            onClick={() => setPageNo((p) => p + 1)}
+            onClick={() => {
+              setPageNo((p) => p + 1);
+              setExpanded(new Set());
+            }}
           >
             다음 →
           </button>
         </div>
       )}
     </>
+  );
+}
+
+// --- 현장(충전소) 행 --------------------------------------------------------
+
+function StationRow({
+  station,
+  open,
+  onToggle,
+}: {
+  station: Station;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const availColor = station.available > 0 ? '#16a34a' : '#6b7280';
+  return (
+    <div className={`station ${open ? 'open' : ''}`}>
+      <button className="station-head" onClick={onToggle} aria-expanded={open}>
+        <span className="station-chev">{open ? '▾' : '▸'}</span>
+        <div className="station-main">
+          <div className="station-name">
+            {station.statNm}
+            {station.mine && <span className="tag tag-mine">자체등록</span>}
+            <span className="muted" style={{ fontWeight: 600 }}>
+              충전기 {station.total}기
+            </span>
+          </div>
+          <div className="station-addr">
+            {[station.addr, station.addrDetail].filter(Boolean).join(' ') || '-'}
+          </div>
+        </div>
+        <div className="station-meta">
+          <span className="badge" style={{ background: availColor }}>
+            사용가능 {station.available}/{station.total}
+          </span>
+          {station.fast > 0 && <span className="tag">급속 {station.fast}</span>}
+          {station.slow > 0 && <span className="tag">완속 {station.slow}</span>}
+          {station.hydrogen > 0 && <span className="tag">수소 {station.hydrogen}</span>}
+          <span className="muted station-op">{station.busiNm ?? '-'}</span>
+        </div>
+      </button>
+      {open && (
+        <div className="station-body">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>충전기 ID</th>
+                  <th>타입</th>
+                  <th>용량</th>
+                  <th>상태</th>
+                  <th>이용시간</th>
+                  <th>갱신</th>
+                </tr>
+              </thead>
+              <tbody>
+                {station.chargers.map((c, i) => {
+                  const sm = statMeta(c.stat);
+                  return (
+                    <tr key={`${c.chgerId}-${i}`}>
+                      <td className="cell-name">{c.chgerId ?? '-'}</td>
+                      <td>
+                        <span className="tag">{speedClass(c)}</span>{' '}
+                        <span className="cell-sub" style={{ display: 'inline' }}>
+                          {chgerTypeName(c.chgerType)}
+                        </span>
+                      </td>
+                      <td>{c.output ? `${c.output}kW` : '-'}</td>
+                      <td>
+                        <span className="badge" style={{ background: sm.color }}>
+                          {sm.label}
+                        </span>
+                      </td>
+                      <td className="cell-sub">{c.useTime ?? '-'}</td>
+                      <td className="cell-sub">{formatKstDate(c.statUpdDt)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -419,9 +519,7 @@ function BarRow({
     <div className="bar-row">
       <span className="bar-label" title={label}>
         <span className="dot" style={{ background: color }} />
-        <span
-          style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-        >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {label}
         </span>
       </span>
@@ -431,6 +529,71 @@ function BarRow({
       <span className="bar-count">{count.toLocaleString()}</span>
     </div>
   );
+}
+
+// --- 현장 그룹핑 -----------------------------------------------------------
+
+interface Station {
+  key: string;
+  statNm: string;
+  addr: string;
+  addrDetail?: string;
+  busiNm?: string;
+  lat?: string;
+  lng?: string;
+  mine?: boolean;
+  chargers: Row[];
+  total: number;
+  available: number;
+  fast: number;
+  slow: number;
+  hydrogen: number;
+  latestUpd?: string;
+}
+
+function groupByStation(rows: Row[]): Station[] {
+  const map = new Map<string, Station>();
+  for (const r of rows) {
+    const key = r.statId || `${r.statNm ?? ''}|${r.addr ?? ''}`;
+    let s = map.get(key);
+    if (!s) {
+      s = {
+        key,
+        statNm: r.statNm ?? '이름 없음',
+        addr: r.addr ?? '',
+        addrDetail: r.addrDetail,
+        busiNm: r.busiNm ?? r.bnm,
+        lat: r.lat,
+        lng: r.lng,
+        mine: r._mine,
+        chargers: [],
+        total: 0,
+        available: 0,
+        fast: 0,
+        slow: 0,
+        hydrogen: 0,
+      };
+      map.set(key, s);
+    }
+    s.chargers.push(r);
+    s.total += 1;
+    if (r.stat === '2') s.available += 1;
+    const sc = speedClass(r);
+    if (sc === '급속') s.fast += 1;
+    else if (sc === '완속') s.slow += 1;
+    else s.hydrogen += 1;
+    if (!s.lat && r.lat) s.lat = r.lat;
+    if (!s.lng && r.lng) s.lng = r.lng;
+    if (!s.busiNm && (r.busiNm || r.bnm)) s.busiNm = r.busiNm ?? r.bnm;
+    if (r._mine) s.mine = true;
+    if (r.statUpdDt && (!s.latestUpd || r.statUpdDt > s.latestUpd)) s.latestUpd = r.statUpdDt;
+  }
+  // 자체등록 → 사용가능 많은 순 → 충전기 많은 순
+  return [...map.values()].sort((a, b) => {
+    if (a.mine !== b.mine) return a.mine ? -1 : 1;
+    if (b.available !== a.available) return b.available - a.available;
+    return b.total - a.total;
+  });
 }
 
 interface Agg {

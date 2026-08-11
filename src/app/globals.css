@@ -181,6 +181,7 @@ select,
 input[type='text'],
 input[type='number'],
 input[type='tel'],
+input[type='search'],
 textarea {
   font: inherit;
   color: var(--text);
@@ -515,6 +516,94 @@ tbody tr:hover {
   accent-color: var(--primary);
 }
 
+/* Station (현장) list */
+.station-list {
+  display: flex;
+  flex-direction: column;
+}
+.station {
+  border-bottom: 1px solid var(--border);
+}
+.station:last-child {
+  border-bottom: none;
+}
+.station.open {
+  background: color-mix(in srgb, var(--primary-soft) 40%, transparent);
+}
+.station-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 14px 16px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: background 0.12s;
+}
+.station-head:hover {
+  background: var(--surface-2);
+}
+.station-chev {
+  color: var(--text-muted);
+  margin-top: 1px;
+  flex: none;
+  width: 14px;
+  font-size: 12px;
+}
+.station-main {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.station-name {
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.station-name .muted {
+  font-size: 12.5px;
+}
+.station-addr {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+.station-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 1 1 auto;
+}
+.station-op {
+  font-size: 12.5px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.station-body {
+  padding: 0 16px 14px 42px;
+}
+.station-body table {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.station-body thead th {
+  background: var(--surface-2);
+}
+.station-body tbody tr:last-child td {
+  border-bottom: none;
+}
+
 /* Map */
 .map-placeholder {
   display: flex;
@@ -588,5 +677,12 @@ tbody tr:hover {
   }
   .form-grid {
     grid-template-columns: 1fr;
+  }
+  .station-meta {
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+  .station-op {
+    max-width: none;
   }
 }
