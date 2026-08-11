@@ -115,6 +115,9 @@ export interface ChargerResponse {
   pageNo: number;
   numOfRows: number;
   items: ChargerItem[];
+  fetched?: number; // 전체수집(all) 시 실제 수집 건수
+  truncated?: boolean; // 상한으로 잘렸는지
+  all?: boolean; // 전체수집 응답 여부
 }
 
 // ----- 요청 ---------------------------------------------------------------

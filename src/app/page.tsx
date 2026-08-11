@@ -39,7 +39,11 @@ export default function DashboardPage() {
   const [includeMine, setIncludeMine] = useState(true);
   const [view, setView] = useState<View>('list');
   const [search, setSearch] = useState('');
+  const [operator, setOperator] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [renderLimit, setRenderLimit] = useState(300);
+
+  const fetchAll = numOfRows === 0;
 
   const [data, setData] = useState<ChargerResponse | null>(null);
   const [mine, setMine] = useState<RegisteredCharger[]>([]);
@@ -54,12 +58,14 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const qs = new URLSearchParams({
-        op: 'info',
-        zcode,
-        pageNo: String(pageNo),
-        numOfRows: String(numOfRows),
-      });
+      const qs = new URLSearchParams({ op: 'info' });
+      if (zcode) qs.set('zcode', zcode);
+      if (numOfRows === 0) {
+        qs.set('all', '1');
+      } else {
+        qs.set('pageNo', String(pageNo));
+        qs.set('numOfRows', String(numOfRows));
+      }
       const res = await fetch(`/api/chargers?${qs.toString()}`, { cache: 'no-store' });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || `요청 실패 (HTTP ${res.status})`);
@@ -80,7 +86,7 @@ export default function DashboardPage() {
   const mineRows: Row[] = useMemo(() => {
     if (!includeMine) return [];
     return mine
-      .filter((m) => m.zcode === zcode)
+      .filter((m) => zcode === '' || m.zcode === zcode)
       .map((m) => ({
         statNm: m.statNm,
         statId: m.id,
@@ -104,26 +110,35 @@ export default function DashboardPage() {
 
   const rows: Row[] = useMemo(() => {
     const apiRows = (data?.items ?? []) as Row[];
-    // 자체 등록은 첫 페이지에만 상단 노출
-    return pageNo === 1 ? [...mineRows, ...apiRows] : apiRows;
-  }, [data, mineRows, pageNo]);
+    // 자체 등록은 첫 페이지(또는 전체수집)에서만 상단 노출
+    const showMine = fetchAll || pageNo === 1;
+    return showMine ? [...mineRows, ...apiRows] : apiRows;
+  }, [data, mineRows, pageNo, fetchAll]);
 
   const agg = useMemo(() => aggregate(rows), [rows]);
 
   // 같은 충전소(주소)로 묶은 현장 목록
   const stations = useMemo(() => groupByStation(rows), [rows]);
 
-  // 검색 필터 (현장명 / 주소)
+  // 검색(현장명/주소) + 운영기관 필터
   const filteredStations = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return stations;
-    return stations.filter(
-      (s) =>
+    return stations.filter((s) => {
+      if (operator && (s.busiNm ?? '') !== operator) return false;
+      if (!q) return true;
+      return (
         s.statNm.toLowerCase().includes(q) ||
         s.addr.toLowerCase().includes(q) ||
-        (s.addrDetail ?? '').toLowerCase().includes(q),
-    );
-  }, [stations, search]);
+        (s.addrDetail ?? '').toLowerCase().includes(q)
+      );
+    });
+  }, [stations, search, operator]);
+
+  // 필터/검색 변경 시 목록 렌더 상한 초기화
+  useEffect(() => {
+    setRenderLimit(300);
+    setExpanded(new Set());
+  }, [search, operator, zcode, numOfRows, pageNo]);
 
   // 지도 마커 — 현장 단위 (좌표 보유 현장만)
   const mapPoints: MapPoint[] = useMemo(() => {
@@ -190,6 +205,7 @@ export default function DashboardPage() {
             value={zcode}
             onChange={(e) => onFilterChange({ zcode: e.target.value })}
           >
+            <option value="">전체</option>
             {REGIONS.map((r) => (
               <option key={r.code} value={r.code}>
                 {r.name}
@@ -207,6 +223,18 @@ export default function DashboardPage() {
             {[100, 200, 500, 1000].map((n) => (
               <option key={n} value={n}>
                 {n.toLocaleString()}건
+              </option>
+            ))}
+            <option value={0}>전체</option>
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="operator">운영기관</label>
+          <select id="operator" value={operator} onChange={(e) => setOperator(e.target.value)}>
+            <option value="">전체 ({agg.operators.length})</option>
+            {agg.operators.map((o) => (
+              <option key={o.key} value={o.key}>
+                {o.key} ({o.count})
               </option>
             ))}
           </select>
@@ -344,8 +372,9 @@ export default function DashboardPage() {
             ? '불러오는 중…'
             : view === 'map'
               ? `${regionName(zcode)} · 좌표 보유 ${mapPoints.length.toLocaleString()}개 현장 지도 표시`
-              : `${regionName(zcode)} · ${filteredStations.length.toLocaleString()}개 현장 표시` +
-                (search ? ` (검색: "${search}")` : ` · 페이지 ${pageNo}`)}
+              : `${regionName(zcode)} · ${filteredStations.length.toLocaleString()}개 현장` +
+                (operator ? ` · ${operator}` : '') +
+                (search ? ` · 검색 "${search}"` : fetchAll ? '' : ` · 페이지 ${pageNo}`)}
         </span>
         {view === 'list' && filteredStations.length > 0 && (
           <button className="btn btn-ghost" onClick={toggleAll}>
@@ -353,6 +382,13 @@ export default function DashboardPage() {
           </button>
         )}
       </div>
+
+      {!loading && data?.truncated && (
+        <div className="alert alert-info" style={{ marginBottom: 12 }}>
+          데이터가 많아 상한({(data.fetched ?? 0).toLocaleString()}건)까지만 불러왔습니다. 지역을
+          좁히거나 검색·운영기관 필터로 조회하세요.
+        </div>
+      )}
 
       {view === 'map' ? (
         <div className="card card-pad">
@@ -374,21 +410,37 @@ export default function DashboardPage() {
               </p>
             </div>
           ) : (
-            <div className="station-list">
-              {filteredStations.map((s) => (
-                <StationRow
-                  key={s.key}
-                  station={s}
-                  open={expanded.has(s.key)}
-                  onToggle={() => toggleStation(s.key)}
-                />
-              ))}
-            </div>
+            <>
+              <div className="station-list">
+                {filteredStations.slice(0, renderLimit).map((s) => (
+                  <StationRow
+                    key={s.key}
+                    station={s}
+                    open={expanded.has(s.key)}
+                    onToggle={() => toggleStation(s.key)}
+                  />
+                ))}
+              </div>
+              {filteredStations.length > renderLimit && (
+                <div className="pager" style={{ paddingTop: 14 }}>
+                  <span className="muted">
+                    {renderLimit.toLocaleString()} / {filteredStations.length.toLocaleString()}개
+                    현장 표시 중
+                  </span>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => setRenderLimit((n) => n + 300)}
+                  >
+                    더 보기 (+300)
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
 
-      {view === 'list' && !search && totalCount > pageSize && (
+      {view === 'list' && !fetchAll && !search && !operator && totalCount > pageSize && (
         <div className="pager">
           <button
             className="btn btn-ghost"
