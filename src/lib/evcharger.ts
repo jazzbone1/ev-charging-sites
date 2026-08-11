@@ -63,6 +63,17 @@ export function statMeta(code?: string): StatMeta {
   return STAT_META[code] ?? { label: `상태(${code})`, color: '#6b7280' };
 }
 
+// 운영기관(CPO) 표기 — 브랜드(bnm) 우선, 없으면 사업자명(busiNm), 그다음 사업자ID.
+// EvCharger API는 CPO 브랜드가 bnm 또는 busiNm 중 어디에 들어갈지 데이터마다 다르므로
+// bnm 을 우선한다. (원본 3필드는 상세에서 그대로 확인 가능)
+export function operatorLabel(item: {
+  bnm?: string;
+  busiNm?: string;
+  busiId?: string;
+}): string {
+  return item.bnm || item.busiNm || item.busiId || '미상';
+}
+
 // 급속/완속/수소 분류 — 충전용량(output)이 있으면 40kW 기준, 없으면 타입 기준
 export function speedClass(item: ChargerItem): '급속' | '완속' | '수소' {
   if (item.chgerType === '89') return '수소';

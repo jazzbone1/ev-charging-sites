@@ -591,6 +591,22 @@ tbody tr:hover {
 .station-body {
   padding: 0 16px 14px 42px;
 }
+.station-raw {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.station-raw b {
+  color: var(--text);
+  font-weight: 700;
+}
 .station-body table {
   background: var(--surface);
   border: 1px solid var(--border);

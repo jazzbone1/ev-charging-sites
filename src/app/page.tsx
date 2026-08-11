@@ -6,6 +6,7 @@ import { REGIONS, regionName } from '@/lib/regions';
 import {
   chgerTypeName,
   formatKstDate,
+  operatorLabel,
   speedClass,
   statMeta,
   type ChargerItem,
@@ -509,6 +510,17 @@ function StationRow({
       </button>
       {open && (
         <div className="station-body">
+          <div className="station-raw">
+            <span>
+              사업자ID <b>{station.busiId ?? '-'}</b>
+            </span>
+            <span>
+              busiNm(사업자명) <b>{station.rawBusiNm ?? '-'}</b>
+            </span>
+            <span>
+              bnm(기관명) <b>{station.rawBnm ?? '-'}</b>
+            </span>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -516,6 +528,7 @@ function StationRow({
                   <th>충전기 ID</th>
                   <th>타입</th>
                   <th>용량</th>
+                  <th>운영기관</th>
                   <th>상태</th>
                   <th>이용시간</th>
                   <th>갱신</th>
@@ -534,6 +547,9 @@ function StationRow({
                         </span>
                       </td>
                       <td>{c.output ? `${c.output}kW` : '-'}</td>
+                      <td title={`busiNm: ${c.busiNm ?? '-'} / bnm: ${c.bnm ?? '-'}`}>
+                        {operatorLabel(c)}
+                      </td>
                       <td>
                         <span className="badge" style={{ background: sm.color }}>
                           {sm.label}
@@ -590,7 +606,10 @@ interface Station {
   statNm: string;
   addr: string;
   addrDetail?: string;
-  busiNm?: string;
+  busiNm?: string; // 표시용 운영기관 라벨
+  busiId?: string; // 원본 사업자ID
+  rawBusiNm?: string; // 원본 busiNm
+  rawBnm?: string; // 원본 bnm(기관명)
   lat?: string;
   lng?: string;
   mine?: boolean;
@@ -614,7 +633,10 @@ function groupByStation(rows: Row[]): Station[] {
         statNm: r.statNm ?? '이름 없음',
         addr: r.addr ?? '',
         addrDetail: r.addrDetail,
-        busiNm: r.busiNm ?? r.bnm,
+        busiNm: operatorLabel(r),
+        busiId: r.busiId,
+        rawBusiNm: r.busiNm,
+        rawBnm: r.bnm,
         lat: r.lat,
         lng: r.lng,
         mine: r._mine,
@@ -636,7 +658,10 @@ function groupByStation(rows: Row[]): Station[] {
     else s.hydrogen += 1;
     if (!s.lat && r.lat) s.lat = r.lat;
     if (!s.lng && r.lng) s.lng = r.lng;
-    if (!s.busiNm && (r.busiNm || r.bnm)) s.busiNm = r.busiNm ?? r.bnm;
+    if ((s.busiNm === '미상' || !s.busiNm) && operatorLabel(r) !== '미상') s.busiNm = operatorLabel(r);
+    if (!s.busiId && r.busiId) s.busiId = r.busiId;
+    if (!s.rawBusiNm && r.busiNm) s.rawBusiNm = r.busiNm;
+    if (!s.rawBnm && r.bnm) s.rawBnm = r.bnm;
     if (r._mine) s.mine = true;
     if (r.statUpdDt && (!s.latestUpd || r.statUpdDt > s.latestUpd)) s.latestUpd = r.statUpdDt;
   }
@@ -675,8 +700,8 @@ function aggregate(rows: Row[]): Agg {
     statMap.set(stat, (statMap.get(stat) ?? 0) + 1);
     if (stat === '2') available += 1;
 
-    const op = r.busiNm ?? r.bnm;
-    if (op) opMap.set(op, (opMap.get(op) ?? 0) + 1);
+    const op = operatorLabel(r);
+    if (op && op !== '미상') opMap.set(op, (opMap.get(op) ?? 0) + 1);
   }
 
   const types = [...typeMap.entries()]
