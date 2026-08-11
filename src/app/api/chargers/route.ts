@@ -1,20 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   fetchChargers,
+  fetchAllChargers,
   EvChargerError,
   type ChargerItem,
   type Operation,
 } from '@/lib/evcharger';
+import { getRegionMaster, listSyncedRegions } from '@/lib/master-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-// 전체(all) 수집 시 안전 상한 (브라우저/서버 보호). 환경변수로 조정 가능.
-const ALL_PER_PAGE = 1000;
-const ALL_MAX = Number(process.env.EVCHARGER_MAX_ALL || 30000);
-
 // GET /api/chargers?op=info|status&zcode=11&pageNo=1&numOfRows=100
-//   all=1 이면 모든 페이지를 수집(ALL_MAX 상한)
+//   cache=1 : 서버 마스터 캐시에서 즉시 서빙 (동기화된 데이터)
+//   all=1   : 모든 페이지를 실시간 수집(상한 EVCHARGER_MAX_ALL)
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
 
@@ -23,13 +22,37 @@ export async function GET(req: NextRequest) {
 
   const zcode = sp.get('zcode') || undefined;
   const zscode = sp.get('zscode') || undefined;
+  const cache = sp.get('cache') === '1' || sp.get('cache') === 'true';
   const all = sp.get('all') === '1' || sp.get('all') === 'true';
   const period = op === 'getChargerStatus' ? clampInt(sp.get('period'), 5, 1, 10) : undefined;
 
   try {
-    if (all) {
-      const data = await fetchAll({ op, zcode, zscode, period });
+    if (cache) {
+      const data = await serveFromCache(zcode);
       return NextResponse.json(data, { headers: { 'Cache-Control': 'no-store' } });
+    }
+
+    if (all) {
+      const { items, totalCount, truncated } = await fetchAllChargers({
+        op,
+        zcode,
+        zscode,
+        period,
+      });
+      return NextResponse.json(
+        {
+          resultCode: '00',
+          resultMsg: 'NORMAL SERVICE.',
+          totalCount,
+          pageNo: 1,
+          numOfRows: items.length,
+          fetched: items.length,
+          truncated,
+          all: true,
+          items,
+        },
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
     }
 
     const pageNo = clampInt(sp.get('pageNo'), 1, 1, 100000);
@@ -45,43 +68,41 @@ export async function GET(req: NextRequest) {
   }
 }
 
-async function fetchAll(params: {
-  op: Operation;
-  zcode?: string;
-  zscode?: string;
-  period?: number;
-}) {
-  const items: ChargerItem[] = [];
-  let totalCount = 0;
-  let page = 1;
-  const maxPages = Math.ceil(ALL_MAX / ALL_PER_PAGE);
-
-  while (page <= maxPages) {
-    const r = await fetchChargers({
-      op: params.op,
-      zcode: params.zcode,
-      zscode: params.zscode,
-      period: params.period,
-      pageNo: page,
-      numOfRows: ALL_PER_PAGE,
-    });
-    totalCount = r.totalCount || totalCount;
-    items.push(...r.items);
-    if (r.items.length < ALL_PER_PAGE) break; // 마지막 페이지
-    if (items.length >= ALL_MAX) break; // 상한 도달
-    page += 1;
+async function serveFromCache(zcode?: string) {
+  if (zcode) {
+    const m = await getRegionMaster(zcode);
+    if (!m) {
+      return { items: [], cached: true, needsSync: true, lastSyncAt: null, totalCount: 0 };
+    }
+    return {
+      items: m.chargers,
+      cached: true,
+      needsSync: false,
+      lastSyncAt: m.lastSyncAt,
+      totalCount: m.chargers.length,
+    };
   }
 
+  // 전체 = 동기화된 전 지역을 합산
+  const regions = await listSyncedRegions();
+  if (regions.length === 0) {
+    return { items: [], cached: true, needsSync: true, lastSyncAt: null, totalCount: 0 };
+  }
+  const items: ChargerItem[] = [];
+  let lastSyncAt: string | null = null;
+  for (const r of regions) {
+    const m = await getRegionMaster(r.zcode);
+    if (!m) continue;
+    items.push(...m.chargers);
+    if (!lastSyncAt || m.lastSyncAt < lastSyncAt) lastSyncAt = m.lastSyncAt; // 가장 오래된 동기화 시각
+  }
   return {
-    resultCode: '00',
-    resultMsg: 'NORMAL SERVICE.',
-    totalCount,
-    pageNo: 1,
-    numOfRows: items.length,
-    fetched: items.length,
-    truncated: items.length < totalCount,
-    all: true,
     items,
+    cached: true,
+    needsSync: false,
+    lastSyncAt,
+    syncedRegions: regions.length,
+    totalCount: items.length,
   };
 }
 

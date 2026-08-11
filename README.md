@@ -107,10 +107,31 @@ Vercel KV / Postgres 등으로 `src/lib/store.ts` 의 함수를 교체하세요.
 
 | 메서드 & 경로                     | 설명                                          |
 | --------------------------------- | --------------------------------------------- |
-| `GET /api/chargers`               | 공공데이터 프록시 (`op=info\|status`, `zcode` 등) |
+| `GET /api/chargers`               | 공공데이터 프록시 (`op=info\|status`, `zcode`, `all=1`, `cache=1`) |
+| `GET /api/sync`                   | 동기화 현황(지역별 마지막 동기화/건수)        |
+| `POST /api/sync?zcode=11`         | 해당 지역 전체를 수집해 마스터 DB에 upsert    |
 | `GET /api/registrations`          | 자체 등록 충전기 목록                          |
 | `POST /api/registrations`         | 신규 충전기 등록                              |
 | `DELETE /api/registrations/:id`   | 등록 충전기 삭제                              |
+
+## 마스터 캐시(DB) & 실시간 상태 구조
+
+전국 전체를 매번 API로 받으면 페이지네이션 때문에 느리고 호출한도를 크게 소모합니다.
+이를 해결하기 위해 **느리게 변하는 현장/충전기 정보(마스터)** 를 서버 DB에 캐시하고,
+**실시간 상태만 가볍게 덧씌우는** 구조를 사용합니다.
+
+- **동기화**: `POST /api/sync?zcode=…` 가 해당 지역 전체를 수집해 `statId+chgerId` 기준으로
+  **upsert**(신규 현장 추가·기존 갱신). 지역별 파일 `master/{zcode}.json` + 인메모리 캐시로 저장.
+- **즉시 로드**: 대시보드는 기본적으로 `GET /api/chargers?cache=1` 로 마스터를 즉시 로드.
+  캐시가 없으면 실시간 조회로 폴백하고 "동기화 필요"를 표시.
+- **실시간 상태**: `⟳ 실시간 상태 갱신` 버튼이 `getChargerStatus`의 **최근 변경분(period)** 만
+  받아 상태를 덧씌움(가벼움).
+- **영속성**: 마스터는 `DATA_DIR`(Railway 볼륨 `/data`)에 저장 → 재배포/재시작 후에도 유지.
+
+> 운영 팁: 전국을 최신으로 유지하려면 **주기적으로 각 지역 `POST /api/sync?zcode=…` 를 호출**하는
+> 스케줄러(예: Railway Cron / 외부 크론)를 두면, 사용자는 항상 즉시 로드된 최신 DB를 봅니다.
+> 지역별 수집 상한은 `EVCHARGER_SYNC_MAX`(기본 200000), 실시간 전체조회 상한은
+> `EVCHARGER_MAX_ALL`(기본 30000)로 조정합니다.
 
 ## 프로젝트 구조
 

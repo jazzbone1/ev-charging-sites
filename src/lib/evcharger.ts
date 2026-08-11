@@ -129,6 +129,10 @@ export interface ChargerResponse {
   fetched?: number; // 전체수집(all) 시 실제 수집 건수
   truncated?: boolean; // 상한으로 잘렸는지
   all?: boolean; // 전체수집 응답 여부
+  cached?: boolean; // 마스터 캐시에서 서빙됨
+  needsSync?: boolean; // 캐시 비어있음(동기화 필요)
+  lastSyncAt?: string | null; // 마지막 동기화 시각
+  syncedRegions?: number; // 전체(union) 시 합산된 지역 수
 }
 
 // ----- 요청 ---------------------------------------------------------------
@@ -265,6 +269,36 @@ function normalizeItem(raw: Record<string, unknown>): ChargerItem {
     delDetail: s(raw.delDetail),
     trafficYn: s(raw.trafficYn),
   };
+}
+
+export interface FetchAllResult {
+  items: ChargerItem[];
+  totalCount: number;
+  truncated: boolean;
+}
+
+// 모든 페이지를 이어서 수집 (동기화/전체조회 공용)
+export async function fetchAllChargers(
+  params: { op: Operation; zcode?: string; zscode?: string; period?: number },
+  opts?: { perPage?: number; max?: number },
+): Promise<FetchAllResult> {
+  const perPage = opts?.perPage ?? 1000;
+  const max = opts?.max ?? Number(process.env.EVCHARGER_MAX_ALL || 30000);
+  const items: ChargerItem[] = [];
+  let totalCount = 0;
+  let page = 1;
+  const maxPages = Math.ceil(max / perPage);
+
+  while (page <= maxPages) {
+    const r = await fetchChargers({ ...params, pageNo: page, numOfRows: perPage });
+    totalCount = r.totalCount || totalCount;
+    items.push(...r.items);
+    if (r.items.length < perPage) break; // 마지막 페이지
+    if (items.length >= max) break; // 상한 도달
+    page += 1;
+  }
+
+  return { items, totalCount, truncated: items.length < totalCount };
 }
 
 export class EvChargerError extends Error {

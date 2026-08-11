@@ -64,6 +64,19 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 마스터 캐시(DB) 관련
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [needsSync, setNeedsSync] = useState(false);
+  const [syncedRegions, setSyncedRegions] = useState<number | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [statusOverlay, setStatusOverlay] = useState<
+    Map<string, { stat?: string; statUpdDt?: string }>
+  >(new Map());
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
+
+  const cached = Boolean(data?.cached);
+
   useEffect(() => {
     fetchRegistrations().then(({ items }) => setMine(items));
   }, []);
@@ -71,19 +84,38 @@ export default function DashboardPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setStatusOverlay(new Map());
     try {
-      const qs = new URLSearchParams({ op: 'info' });
-      if (zcode) qs.set('zcode', zcode);
-      if (numOfRows === 0) {
-        qs.set('all', '1');
-      } else {
-        qs.set('pageNo', String(pageNo));
-        qs.set('numOfRows', String(numOfRows));
+      // 1) 마스터 캐시(DB) 우선 — 즉시 로드
+      const cq = new URLSearchParams({ op: 'info', cache: '1' });
+      if (zcode) cq.set('zcode', zcode);
+      const cres = await fetch(`/api/chargers?${cq.toString()}`, { cache: 'no-store' });
+      const cjson = (await cres.json()) as ChargerResponse & { error?: string };
+      if (cres.ok && !cjson.needsSync && (cjson.items?.length ?? 0) > 0) {
+        setData(cjson);
+        setNeedsSync(false);
+        setLastSyncAt(cjson.lastSyncAt ?? null);
+        setSyncedRegions(cjson.syncedRegions ?? null);
+        return;
       }
-      const res = await fetch(`/api/chargers?${qs.toString()}`, { cache: 'no-store' });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || `요청 실패 (HTTP ${res.status})`);
-      setData(json as ChargerResponse);
+
+      // 2) 캐시 없음 → 실시간 조회(동기화 권장)
+      setNeedsSync(true);
+      setLastSyncAt(cjson?.lastSyncAt ?? null);
+      setSyncedRegions(cjson?.syncedRegions ?? null);
+
+      const lq = new URLSearchParams({ op: 'info' });
+      if (zcode) lq.set('zcode', zcode);
+      if (numOfRows === 0) {
+        lq.set('all', '1');
+      } else {
+        lq.set('pageNo', String(pageNo));
+        lq.set('numOfRows', String(numOfRows));
+      }
+      const lres = await fetch(`/api/chargers?${lq.toString()}`, { cache: 'no-store' });
+      const ljson = await lres.json();
+      if (!lres.ok) throw new Error(ljson?.error || `요청 실패 (HTTP ${lres.status})`);
+      setData(ljson as ChargerResponse);
     } catch (e) {
       setData(null);
       setError(e instanceof Error ? e.message : '데이터를 불러오지 못했습니다.');
@@ -91,6 +123,67 @@ export default function DashboardPage() {
       setLoading(false);
     }
   }, [zcode, pageNo, numOfRows]);
+
+  // 지역별 DB 동기화 (전체 선택 시 전 지역 순차 동기화)
+  const runSync = useCallback(async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      const targets = zcode ? [{ code: zcode, name: regionName(zcode) }] : REGIONS;
+      let added = 0;
+      let updated = 0;
+      let total = 0;
+      for (let i = 0; i < targets.length; i++) {
+        const t = targets[i];
+        setSyncMsg(
+          targets.length > 1
+            ? `전체 동기화 ${i + 1}/${targets.length} — ${t.name}…`
+            : `${t.name} 동기화 중…`,
+        );
+        const res = await fetch(`/api/sync?zcode=${t.code}`, { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || `동기화 실패 (HTTP ${res.status})`);
+        added += json.added ?? 0;
+        updated += json.updated ?? 0;
+        total = json.total ?? total;
+      }
+      setSyncMsg(
+        `동기화 완료 · 신규 ${added.toLocaleString()} · 갱신 ${updated.toLocaleString()}`,
+      );
+      await fetchData();
+    } catch (e) {
+      setSyncMsg(null);
+      setError(e instanceof Error ? e.message : '동기화에 실패했습니다.');
+    } finally {
+      setSyncing(false);
+    }
+  }, [zcode, fetchData]);
+
+  // 실시간 상태 갱신 — 최근 변경분(period) 델타를 덧씌움
+  const refreshStatus = useCallback(async () => {
+    setStatusRefreshing(true);
+    setError(null);
+    try {
+      const q = new URLSearchParams({ op: 'status', numOfRows: '1000', period: '10' });
+      if (zcode) q.set('zcode', zcode);
+      const res = await fetch(`/api/chargers?${q.toString()}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || '상태 조회 실패');
+      const map = new Map<string, { stat?: string; statUpdDt?: string }>();
+      for (const it of (json.items ?? []) as ChargerItem[]) {
+        map.set(`${it.statId ?? ''}::${it.chgerId ?? ''}`, {
+          stat: it.stat,
+          statUpdDt: it.statUpdDt,
+        });
+      }
+      setStatusOverlay(map);
+      setSyncMsg(`실시간 상태 ${map.size.toLocaleString()}건 반영(최근 10분 변경분)`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '상태 갱신 실패');
+    } finally {
+      setStatusRefreshing(false);
+    }
+  }, [zcode]);
 
   useEffect(() => {
     fetchData();
@@ -123,11 +216,18 @@ export default function DashboardPage() {
   }, [mine, includeMine, zcode]);
 
   const rows: Row[] = useMemo(() => {
-    const apiRows = (data?.items ?? []) as Row[];
-    // 자체 등록은 첫 페이지(또는 전체수집)에서만 상단 노출
-    const showMine = fetchAll || pageNo === 1;
+    let apiRows = (data?.items ?? []) as Row[];
+    // 실시간 상태 델타 덧씌우기
+    if (statusOverlay.size > 0) {
+      apiRows = apiRows.map((r) => {
+        const o = statusOverlay.get(`${r.statId ?? ''}::${r.chgerId ?? ''}`);
+        return o ? { ...r, stat: o.stat ?? r.stat, statUpdDt: o.statUpdDt ?? r.statUpdDt } : r;
+      });
+    }
+    // 자체 등록은 첫 페이지(또는 전체수집/캐시)에서 상단 노출
+    const showMine = cached || fetchAll || pageNo === 1;
     return showMine ? [...mineRows, ...apiRows] : apiRows;
-  }, [data, mineRows, pageNo, fetchAll]);
+  }, [data, mineRows, pageNo, fetchAll, cached, statusOverlay]);
 
   const agg = useMemo(() => aggregate(rows, opField), [rows, opField]);
 
@@ -293,6 +393,49 @@ export default function DashboardPage() {
         </button>
       </div>
 
+      <div className="card sync-bar">
+        <div className="sync-info">
+          {cached ? (
+            <>
+              <span className="badge badge-outline">🗄️ DB 캐시</span>
+              <span className="muted">
+                마지막 동기화 {lastSyncAt ? lastSyncAt.replace('T', ' ').slice(0, 16) : '-'}
+                {syncedRegions ? ` · ${syncedRegions}개 지역` : ''}
+              </span>
+            </>
+          ) : needsSync ? (
+            <>
+              <span className="badge" style={{ background: 'var(--warning)' }}>
+                동기화 필요
+              </span>
+              <span className="muted">
+                실시간 직접조회(느림) 중 · {zcode ? regionName(zcode) : '전체'} DB 동기화를 권장합니다
+              </span>
+            </>
+          ) : (
+            <span className="muted">실시간 조회</span>
+          )}
+          {syncMsg && <span className="muted">· {syncMsg}</span>}
+        </div>
+        <div className="sync-actions">
+          <button
+            className="btn btn-ghost"
+            onClick={refreshStatus}
+            disabled={statusRefreshing || syncing || loading}
+          >
+            {statusRefreshing ? '상태 갱신 중…' : '⟳ 실시간 상태 갱신'}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={runSync}
+            disabled={syncing || loading}
+            title="공공데이터에서 현장/충전기 정보를 받아 서버 DB에 저장합니다."
+          >
+            {syncing ? '동기화 중…' : zcode ? `${regionName(zcode)} DB 동기화` : '전체 DB 동기화'}
+          </button>
+        </div>
+      </div>
+
       {error && (
         <div className="alert alert-error" style={{ marginBottom: 20 }}>
           {error}
@@ -405,7 +548,7 @@ export default function DashboardPage() {
               ? `${regionName(zcode)} · 좌표 보유 ${mapPoints.length.toLocaleString()}개 현장 지도 표시`
               : `${regionName(zcode)} · ${filteredStations.length.toLocaleString()}개 현장` +
                 (operator ? ` · ${operator}` : '') +
-                (search ? ` · 검색 "${search}"` : fetchAll ? '' : ` · 페이지 ${pageNo}`)}
+                (search ? ` · 검색 "${search}"` : fetchAll || cached ? '' : ` · 페이지 ${pageNo}`)}
         </span>
         {view === 'list' && filteredStations.length > 0 && (
           <button className="btn btn-ghost" onClick={toggleAll}>
@@ -472,7 +615,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {view === 'list' && !fetchAll && !search && !operator && totalCount > pageSize && (
+      {view === 'list' && !cached && !fetchAll && !search && !operator && totalCount > pageSize && (
         <div className="pager">
           <button
             className="btn btn-ghost"

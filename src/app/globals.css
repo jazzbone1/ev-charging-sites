@@ -516,6 +516,30 @@ tbody tr:hover {
   accent-color: var(--primary);
 }
 
+/* Sync bar */
+.sync-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+.sync-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  min-width: 0;
+}
+.sync-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* Station (현장) list */
 .station-list {
   display: flex;
